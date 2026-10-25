@@ -45,8 +45,8 @@ internal class RearDisplaySelfieController(
     private var rearStartPending = false
     // Every asynchronous WindowArea request has its own identity. Cancelled callbacks
     // must not install previews or transfer the Activity after the user has left the mode.
-    private var dualRequestGeneration = 0L
-    private var rearRequestGeneration = 0L
+    private val dualRequests = FoldRequestGeneration()
+    private val rearRequests = FoldRequestGeneration()
     private var disposed = false
     private var skipNextSessionEndRebind = false
     // Rear Camera Selfie transfers the Activity itself; when Android moves it back,
@@ -76,7 +76,7 @@ internal class RearDisplaySelfieController(
 
     private fun dualCallbackFor(request: Long) = object : WindowAreaPresentationSessionCallback {
         override fun onSessionStarted(session: WindowAreaSessionPresenter) {
-            if (request != dualRequestGeneration || disposed ||
+            if (!dualRequests.isCurrent(request) || disposed ||
                 latestController !== this@RearDisplaySelfieController) {
                 // A cancelled startup can still deliver a real WindowArea session.
                 // Close it without ever attaching its preview to the camera.
@@ -119,7 +119,7 @@ internal class RearDisplaySelfieController(
                                             bottom: Int, oldLeft: Int, oldTop: Int,
                                             oldRight: Int, oldBottom: Int) {
                     if (right <= left || bottom <= top || disposed || dualSession !== session ||
-                        request != dualRequestGeneration) return
+                        !dualRequests.isCurrent(request)) return
                     preview.removeOnLayoutChangeListener(this)
                     Log.i(TAG, "Outer display ready: ${right-left}x${bottom-top}")
                     activity.camConfig.startCamera(true)
@@ -129,7 +129,7 @@ internal class RearDisplaySelfieController(
         }
 
         override fun onContainerVisibilityChanged(isVisible: Boolean) {
-            if (request != dualRequestGeneration || disposed) return
+            if (!dualRequests.isCurrent(request) || disposed) return
             val wasVisible = dualVisible
             dualVisible = isVisible
             // Camera must not keep driving an invisible display in the background. Don't
@@ -140,7 +140,7 @@ internal class RearDisplaySelfieController(
         }
 
         override fun onSessionEnded(t: Throwable?) {
-            val obsolete = request != dualRequestGeneration ||
+            val obsolete = !dualRequests.isCurrent(request) ||
                 latestController !== this@RearDisplaySelfieController
             // Do not let a late end from an old request erase a newer live session.
             if (obsolete && dualSession != null) return
@@ -338,7 +338,7 @@ internal class RearDisplaySelfieController(
             try {
                 activity.settingsDialog.dismiss()
                 Log.i(TAG, "Dual released; starting queued Rear Camera Selfie")
-                val request = ++rearRequestGeneration
+                val request = rearRequests.begin()
                 rearStartPending = true
                 controller.transferActivityToWindowArea(
                     token, activity, executor, rearCallbackFor(request))
@@ -424,7 +424,7 @@ internal class RearDisplaySelfieController(
             }
             val token = info?.token ?: return
             activity.settingsDialog.dismiss()
-            val request = ++rearRequestGeneration
+            val request = rearRequests.begin()
             rearStartPending = true
             controller.transferActivityToWindowArea(
                 token, activity, executor, rearCallbackFor(request))
@@ -475,7 +475,7 @@ internal class RearDisplaySelfieController(
             activity.settingsDialog.dismiss()
             dualStartPending = true
             skipNextSessionEndRebind = false
-            val request = ++dualRequestGeneration
+            val request = dualRequests.begin()
             Log.i(TAG, "Requesting Dual Screen Preview")
             controller.presentContentOnWindowArea(
                 token, activity, executor, dualCallbackFor(request))
@@ -496,7 +496,7 @@ internal class RearDisplaySelfieController(
     // operation happens to be current by the time Android delivers the event.
     private fun rearCallbackFor(request: Long) = object : WindowAreaSessionCallback {
         override fun onSessionStarted(session: WindowAreaSession) {
-            if (request != rearRequestGeneration || disposed ||
+            if (!rearRequests.isCurrent(request) || disposed ||
                 latestController !== this@RearDisplaySelfieController ||
                 activity.camConfig.currentMode != app.grapheneos.camera.CameraMode.CAMERA) {
                 Log.i(TAG, "Rejecting obsolete Rear Selfie transfer")
@@ -509,7 +509,7 @@ internal class RearDisplaySelfieController(
             this@RearDisplaySelfieController.onSessionStarted(session)
         }
         override fun onSessionEnded(t: Throwable?) {
-            if (request != rearRequestGeneration || disposed ||
+            if (!rearRequests.isCurrent(request) || disposed ||
                 latestController !== this@RearDisplaySelfieController) return
             rearStartPending = false
             this@RearDisplaySelfieController.onSessionEnded(t)
@@ -558,8 +558,8 @@ internal class RearDisplaySelfieController(
         rearHandoffGenerationAcrossRecreation++
         pendingRearNotBeforeUptimeMs = 0L
         pendingRearDelayScheduledAcrossRecreation = false
-        dualRequestGeneration++
-        rearRequestGeneration++
+        dualRequests.cancel()
+        rearRequests.cancel()
         dualStartPending = false
         rearStartPending = false
         secondaryPreviewView = null
@@ -596,8 +596,8 @@ internal class RearDisplaySelfieController(
     fun dispose() {
         if (disposed) return
         disposed = true
-        dualRequestGeneration++
-        rearRequestGeneration++
+        dualRequests.cancel()
+        rearRequests.cancel()
         innerPreviewRestorePending = false
         activity.previewView.removeOnLayoutChangeListener(innerPreviewLayoutListener)
         secondaryPreviewView = null
