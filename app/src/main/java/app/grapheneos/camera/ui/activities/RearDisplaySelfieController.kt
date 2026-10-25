@@ -84,7 +84,7 @@ internal class RearDisplaySelfieController(
                 // A cancelled startup can still deliver a real WindowArea session.
                 // Close it without ever attaching its preview to the camera.
                 Log.i(TAG, "Rejecting obsolete Dual presentation callback")
-                startDualTeardown()
+                // This callback cannot change the state of a newer start request.
                 session.close()
                 return
             }
@@ -146,7 +146,16 @@ internal class RearDisplaySelfieController(
             val obsolete = !dualRequests.isCurrent(request) ||
                 latestController !== this@RearDisplaySelfieController
             // Do not let a late end from an old request erase a newer live session.
-            if (obsolete && dualSession != null && dualSession !== requestSession) return
+            if (obsolete && (requestSession == null || dualSession !== requestSession)) {
+                // A cancelled pending session never owned our active preview. Its
+                // late end must not clear a newer request's flags or rebind CameraX.
+                if (dualTeardownPendingAcrossRecreation &&
+                    dualSession == null && !dualStartPending) {
+                    dualSessionEndObservedAcrossRecreation = true
+                    finishDualTeardownIfReady()
+                }
+                return
+            }
             val handingOffToRear = !obsolete && pendingRearAfterDualAcrossRecreation
             if (handingOffToRear) {
                 // Allow the display transition to finish before starting rear selfie.
