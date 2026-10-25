@@ -75,7 +75,10 @@ internal class RearDisplaySelfieController(
     }
 
     private fun dualCallbackFor(request: Long) = object : WindowAreaPresentationSessionCallback {
+        private var requestSession: WindowAreaSessionPresenter? = null
+
         override fun onSessionStarted(session: WindowAreaSessionPresenter) {
+            requestSession = session
             if (!dualRequests.isCurrent(request) || disposed ||
                 latestController !== this@RearDisplaySelfieController) {
                 // A cancelled startup can still deliver a real WindowArea session.
@@ -143,7 +146,7 @@ internal class RearDisplaySelfieController(
             val obsolete = !dualRequests.isCurrent(request) ||
                 latestController !== this@RearDisplaySelfieController
             // Do not let a late end from an old request erase a newer live session.
-            if (obsolete && dualSession != null) return
+            if (obsolete && dualSession != null && dualSession !== requestSession) return
             val handingOffToRear = !obsolete && pendingRearAfterDualAcrossRecreation
             if (handingOffToRear) {
                 // Allow the display transition to finish before starting rear selfie.
