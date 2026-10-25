@@ -507,7 +507,10 @@ internal class RearDisplaySelfieController(
     // A callback is tied to the request that started it, never to whichever
     // operation happens to be current by the time Android delivers the event.
     private fun rearCallbackFor(request: Long) = object : WindowAreaSessionCallback {
+        private var requestSession: WindowAreaSession? = null
+
         override fun onSessionStarted(session: WindowAreaSession) {
+            requestSession = session
             if (!rearRequests.isCurrent(request) || disposed ||
                 latestController !== this@RearDisplaySelfieController ||
                 activity.camConfig.currentMode != app.grapheneos.camera.CameraMode.CAMERA) {
@@ -521,8 +524,15 @@ internal class RearDisplaySelfieController(
             this@RearDisplaySelfieController.onSessionStarted(session)
         }
         override fun onSessionEnded(t: Throwable?) {
-            if (!rearRequests.isCurrent(request) || disposed ||
-                latestController !== this@RearDisplaySelfieController) return
+            if (disposed || latestController !== this@RearDisplaySelfieController) return
+            if (!rearRequests.isCurrent(request)) {
+                // A cancelled ACTIVE transfer still owns the old session cleanup.
+                // A cancelled PENDING transfer must not clear a newer Rear session.
+                if (requestSession != null && rearSession === requestSession) {
+                    this@RearDisplaySelfieController.onSessionEnded(t)
+                }
+                return
+            }
             rearStartPending = false
             this@RearDisplaySelfieController.onSessionEnded(t)
         }
