@@ -172,6 +172,7 @@ open class MainActivity : AppCompatActivity(),
             }
         }
     }
+    internal fun foldPreviewRecoveryCount(): Int = rearSelfieController?.foldPreviewRecoveryCount ?: 0
     internal fun foldSecondaryPreviewView(): PreviewView? = rearSelfieController?.secondaryPreviewView
     internal fun onFoldSecondaryPreviewBindFailure() { rearSelfieController?.onPreviewBindFailed() }
     internal fun closeFoldDualForModeChange() { rearSelfieController?.stopDualForModeChange() }
@@ -1284,7 +1285,10 @@ open class MainActivity : AppCompatActivity(),
             val mode = selectedTab.tag as? CameraMode ?: return
             // Cancel pending AND active WindowArea requests, including a queued
             // Dual -> Rear transfer. A toggle is not a safe cancellation operation.
-            rearSelfieController?.cancelForModeChange()
+            rearSelfieController?.cancelForModeChange(
+                restoreCameraPreview = mode == CameraMode.CAMERA &&
+                    mode == camConfig.currentMode
+            )
 
             // Blurred while the strip is still gliding, not once the camera has gone: the rebind
             // holds the main thread for half a second, so a transition left to the stream state
