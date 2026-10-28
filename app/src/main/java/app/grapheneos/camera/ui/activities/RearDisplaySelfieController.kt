@@ -49,6 +49,12 @@ internal class RearDisplaySelfieController(
     private val rearRequests = FoldRequestGeneration()
     private var disposed = false
     private var skipNextSessionEndRebind = false
+    // If Camera is selected while a Dual -> Rear handoff is pending, currentMode
+    // remains CAMERA. switchMode(CAMERA) therefore does not bind the one-preview
+    // pipeline. Restore it explicitly once the WindowArea presentation has ended.
+    private var restoreCameraAfterFoldCancel = false
+    private var cameraPreviewRecoveryCount = 0
+    internal val foldPreviewRecoveryCount: Int get() = cameraPreviewRecoveryCount
     // Rear Camera Selfie transfers the Activity itself; when Android moves it back,
     // the PreviewView's Surface can change even though the Activity remains RESUMED.
     private var innerPreviewRestorePending = false
@@ -66,6 +72,7 @@ internal class RearDisplaySelfieController(
             latestRearAreaInfoAcrossRecreation = info
             finishDualTeardownIfReady()
             tryLaunchPendingRearSelfie()
+            restoreCameraPreviewAfterCancellationIfReady()
             Log.i(TAG, "WindowArea status: rear=${status(rearOperation)}, " +
                 "dual=${status(dualOperation)}, teardown=$dualTeardownPendingAcrossRecreation")
             refreshSettings()
@@ -154,6 +161,7 @@ internal class RearDisplaySelfieController(
                     dualSessionEndObservedAcrossRecreation = true
                     finishDualTeardownIfReady()
                 }
+                restoreCameraPreviewAfterCancellationIfReady()
                 return
             }
             val handingOffToRear = !obsolete && pendingRearAfterDualAcrossRecreation
@@ -183,7 +191,10 @@ internal class RearDisplaySelfieController(
                     androidx.lifecycle.Lifecycle.State.RESUMED)) {
                 activity.camConfig.startCamera(true)
             }
-            if (!disposed) refreshSettings()
+            if (!disposed) {
+                refreshSettings()
+                restoreCameraPreviewAfterCancellationIfReady()
+            }
             // The session-end callback can belong to an Activity already recreated
             // by Android. Wake the current Activity/controller, not the old one.
             latestController?.tryLaunchPendingRearSelfie()
@@ -242,6 +253,7 @@ internal class RearDisplaySelfieController(
         }
         restoreInnerPreviewWhenReady()
         tryLaunchPendingRearSelfie()
+        restoreCameraPreviewAfterCancellationIfReady()
     }
     fun onActivityWindowChanged() = onActivityResumed()
 
@@ -564,18 +576,57 @@ internal class RearDisplaySelfieController(
     }
 
     /**
+     * The old CameraX graph may still contain two Preview use cases even after
+     * WindowArea reports that Dual has ended. In that case the outer Surface is
+     * gone but the inner UI can display its last frame while ImageCapture works.
+     * Rebind exactly once, after teardown; never during Video or an active Rear
+     * transfer. This also handles the case where Dual ended *before* Camera
+     * was tapped and a queued Rear handoff was subsequently cancelled.
+     */
+    private fun restoreCameraPreviewAfterCancellationIfReady() {
+        if (!restoreCameraAfterFoldCancel || disposed ||
+            latestController !== this) return
+        activity.previewView.post {
+            if (!restoreCameraAfterFoldCancel || disposed ||
+                latestController !== this ||
+                activity.camConfig.currentMode != app.grapheneos.camera.CameraMode.CAMERA ||
+                dualSession != null || dualStartPending || rearSession != null ||
+                rearStartPending || pendingRearAfterDualAcrossRecreation ||
+                dualTeardownPendingAcrossRecreation ||
+                status(dualOperation) == WindowAreaCapability.Status.WINDOW_AREA_STATUS_ACTIVE ||
+                status(rearOperation) == WindowAreaCapability.Status.WINDOW_AREA_STATUS_ACTIVE ||
+                !activity.lifecycle.currentState.isAtLeast(
+                    androidx.lifecycle.Lifecycle.State.RESUMED)) return@post
+
+            restoreCameraAfterFoldCancel = false
+            skipNextSessionEndRebind = false
+            cameraPreviewRecoveryCount++
+            Log.i(TAG, "Cancelled fold handoff; rebinding single inner CameraX preview")
+            activity.camConfig.startCamera(true)
+        }
+    }
+
+    /**
      * Cancel the *requested* operation, not just an already opened session. In particular,
      * dismiss a queued Rear transfer and invalidate Dual/Rear start callbacks that arrive
      * after Camera or Video has been selected. Safe to call more than once.
      */
-    fun cancelForModeChange() {
+    fun cancelForModeChange(restoreCameraPreview: Boolean = false) {
         if (disposed) return
+        val foldHandoffWasQueued = pendingRearAfterDualAcrossRecreation
         val dualWasPending = dualStartPending
         val dualWasActive = dualSession != null ||
             status(dualOperation) == WindowAreaCapability.Status.WINDOW_AREA_STATUS_ACTIVE
         val rearWasActive = rearSession != null ||
             status(rearOperation) == WindowAreaCapability.Status.WINDOW_AREA_STATUS_ACTIVE
 
+        // On a Camera -> Camera selection, CamConfig.switchMode() is not called.
+        // Force a one-Preview rebind if the outgoing fold operation had changed
+        // (or was about to change) the camera's preview pipeline.
+        restoreCameraAfterFoldCancel = restoreCameraPreview &&
+            activity.camConfig.currentMode == app.grapheneos.camera.CameraMode.CAMERA &&
+            (foldHandoffWasQueued || dualWasPending || dualWasActive ||
+                dualTeardownPendingAcrossRecreation || secondaryPreviewView != null)
         pendingRearAfterDualAcrossRecreation = false
         rearHandoffGenerationAcrossRecreation++
         pendingRearNotBeforeUptimeMs = 0L
@@ -598,6 +649,7 @@ internal class RearDisplaySelfieController(
             }
         }
         refreshSettings()
+        restoreCameraPreviewAfterCancellationIfReady()
     }
 
     /** Called before CamConfig enters another mode: no 2-preview bind in video/extensions. */
