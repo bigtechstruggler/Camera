@@ -1,6 +1,7 @@
 package app.grapheneos.camera
 
 import android.Manifest
+import androidx.camera.view.PreviewView
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.GrantPermissionRule
@@ -59,6 +60,49 @@ class FoldTabInteractionRegressionTest {
                 assertEquals(CameraMode.CAMERA, activity.camConfig.currentMode)
                 assertEquals(null, activity.foldSelectedMode)
                 assertEquals(CameraMode.CAMERA, activity.tabLayout.selectedTab?.tag)
+                // Cancellation alone is insufficient: camera may still be bound
+                // to the destroyed outer display, leaving a frozen inner frame.
+                org.junit.Assert.assertTrue(
+                    "Cancelling Dual -> Rear -> Camera did not rebind the inner preview",
+                    activity.foldPreviewRecoveryCount() > 0
+                )
+            }
+        }
+    }
+
+    @Test
+    fun liveDualToRearToCamera_restoresOrdinaryPreview() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            awaitModeTabs(scenario)
+            scenario.onActivity { activity ->
+                assumeTrue("A foldable dual preview is needed",
+                    activity.availableFoldTabModes().containsAll(
+                        listOf(FoldTabMode.DUAL, FoldTabMode.REAR)))
+                activity.finalizeMode(activity.tabLayout.getTabForFoldMode(FoldTabMode.DUAL))
+                activity.tabLayout.settleNow()
+            }
+
+            // Wait until the outer live Preview actually exists. The original
+            // scenario only covered cancelling a start request before creation.
+            waitUntil(scenario, "the Dual presentation has a live outer preview") {
+                it.foldSecondaryPreviewView() != null
+            }
+            scenario.onActivity { activity ->
+                activity.finalizeMode(activity.tabLayout.getTabForFoldMode(FoldTabMode.REAR))
+                activity.tabLayout.settleNow()
+                activity.finalizeMode(activity.tabLayout.getTabForMode(CameraMode.CAMERA))
+                activity.tabLayout.settleNow()
+            }
+
+            waitUntil(scenario, "CameraX rebind after cancelling the Rear handoff") {
+                it.foldPreviewRecoveryCount() > 0 &&
+                    it.previewView.previewStreamState.value == PreviewView.StreamState.STREAMING
+            }
+            Thread.sleep(2500) // the cancelled handoff's original cooldown
+            scenario.onActivity { activity ->
+                assertEquals(CameraMode.CAMERA, activity.camConfig.currentMode)
+                assertEquals(null, activity.foldSelectedMode)
+                assertEquals(null, activity.foldSecondaryPreviewView())
             }
         }
     }
